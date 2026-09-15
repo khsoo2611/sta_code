@@ -1,0 +1,42 @@
+{
+  "dataset": "miami",
+  "dimension": 12,
+  "estimators": [
+    "sta_sbf",
+    "sta_csbf",
+    "lp_nw_theory",
+    "lp_ll_theory",
+    "krr_m",
+    "krr_r",
+    "ease_f_nw",
+    "ease_f_ll",
+    "ease_f_m",
+    "ease_f_r",
+    "ease_nw",
+    "ease_ll",
+    "ease_m",
+    "ease_r",
+    "pi"
+  ],
+  "n_values": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+  "N": 5000,
+  "reps": 100,
+  "seed": 202605310,
+  "K": 5,
+  "r": 2,
+  "H_by_n": {
+    "100": 20,
+    "200": 40,
+    "300": 60,
+    "400": 80,
+    "500": 100,
+    "600": 120,
+    "700": 140,
+    "800": 160,
+    "900": 180,
+    "1000": 200
+  },
+  "cv_folds": 10,
+  "jobs": 12,
+  "run_name_pattern": "miami_n{n}_N5000"
+}

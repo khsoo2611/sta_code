@@ -1,0 +1,22 @@
+{
+  "experiment": "M1",
+  "model": "s1",
+  "dimensions": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  "estimators": [
+    "sta_sbf",
+    "sta_csbf",
+    "lp_nw_n1_5",
+    "lp_ll_n1_5"
+  ],
+  "n": 500,
+  "N": 5000,
+  "reps": 100,
+  "seed": 1,
+  "noise_sigma": 1.0,
+  "K": 5,
+  "r": 2,
+  "H": 100,
+  "cv_folds": 10,
+  "jobs": 12,
+  "run_name": "M1_n500_N5000"
+}
