@@ -1,4 +1,4 @@
-"""STA-SBF: smooth backfitting of an additive local-constant model.
+"""ATA-SBF: smooth backfitting of an additive local-constant model.
 
 Covariates lie in [0, 1]. Each component m_j is stored on an equally spaced
 grid and linearly interpolated between grid points.

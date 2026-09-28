@@ -1,8 +1,8 @@
-"""Real-data study: repeated random labeled/unlabeled splits of one data set.
+"""Repeated random labeled/unlabeled splits. Table 2 settings are in protein.py.
 
 From the command line:
 
-    python real_data/run_realdata.py miami --estimators sta_sbf pi --n 500 --jobs 8
+    python real_data/run_realdata.py miami --estimators ata_sbf pi --n 500 --jobs 12
 
 or from Python, run_realdata(...) for one (n, N) and run_sample_size_grid(...)
 for every combination of several n and N.

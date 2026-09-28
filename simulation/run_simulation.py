@@ -1,12 +1,12 @@
-"""Simulation study.
+"""Common simulation runner. Paper settings are in M1.py, M2.py, M3.py and M4.py.
 
 From the command line:
 
-    python simulation/run_simulation.py s1 --estimators sta_sbf sta_csbf --n 500 --jobs 8
+    python simulation/run_simulation.py M1 --estimators ata_sbf ata_csbf --n 500 --jobs 12
 
 or from Python:
 
-    config = SimulationConfig(model="s1", estimators=["sta_sbf", "pi"], n=200, reps=20)
+    config = SimulationConfig(model="M1", estimators=["ata_sbf", "pi"], n=200, reps=20)
     summary, records = run_simulation(config)
     ratio_table(summary)
 
@@ -39,8 +39,8 @@ OUTPUT = ROOT / "outputs" / "simulation"
 
 @dataclass
 class SimulationConfig:
-    model: str = "s1"
-    estimators: tuple = ("sta_sbf", "sta_csbf", "lp_nw_n1_5", "lp_ll_n1_5",
+    model: str = "M1"
+    estimators: tuple = ("ata_sbf", "ata_csbf", "lp_nw_n1_5", "lp_ll_n1_5",
                          "lp_nw_theory", "lp_ll_theory", "krr_m", "krr_r")
     dimensions: tuple = tuple(range(2, 16))
     n: int = 500

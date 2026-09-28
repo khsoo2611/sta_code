@@ -3,14 +3,14 @@ from functools import partial
 
 import numpy as np
 
-from . import ease, krr, lp, pi, sta_csbf, sta_sbf
+from . import ata_csbf, ata_sbf, ease, krr, lp, pi
 from .utils import add_intercept, solve, sq_error
 
 # Each function takes a Sample and returns a dict with either "m_u" (imputed
 # responses on U, projected below) or "beta", plus tuning information.
 DIRECT = {
-    "sta_sbf": sta_sbf.run,
-    "sta_csbf": sta_csbf.run,
+    "ata_sbf": ata_sbf.run,
+    "ata_csbf": ata_csbf.run,
     "lp_nw_n1_5": partial(lp.run, smoother="nw", grid="n1_5"),
     "lp_nw_theory": partial(lp.run, smoother="nw", grid="theory"),
     "lp_ll_n1_5": partial(lp.run, smoother="ll", grid="n1_5"),
@@ -20,8 +20,8 @@ DIRECT = {
     "pi": pi.run,
 }
 # SNP/EASE variants: (nuisance smoother, reduce X by SIR, combine with OLS).
-# In the paper EASE(F)-* is SNP on the full X and EASE-* is the SIR version
-# combined with OLS. The other two combinations are kept for comparison.
+# The paper uses ease_nw, ease_ll, ease_m and ease_r, with SIR and OLS combination.
+# Other variants remain available for the earlier additional comparisons.
 EASE = {
     "ease_f_nw": ("nw", False, False),
     "ease_f_ll": ("ll", False, False),
@@ -48,7 +48,7 @@ class Sample:
     """Labeled data (X, y) and unlabeled covariates X_u of one replication.
 
     X_u1 is X_u with an intercept column and Gamma_u = X_u1'X_u1 / N; Gamma_w is
-    the same Gram matrix over L and U together (STA-CSBF weights). folds are the
+    the same Gram matrix over L and U together (ATA-CSBF weights). folds are the
     (train, validation) pairs shared by the CV of the direct estimators.
     """
 

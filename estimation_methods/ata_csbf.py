@@ -1,4 +1,4 @@
-"""STA-CSBF: weighted smooth backfitting with a calibration step.
+"""ATA-CSBF: weighted smooth backfitting with a calibration step.
 
 Labeled point i gets weight w_i = ||Gamma_w^{-1} (1, X_i)||^2. The response and
 the columns of X1 / w are smoothed together, and m = m_y + m_basis @ lambda
@@ -8,7 +8,7 @@ fitted values at the labeled points.
 
 import numpy as np
 
-from .sta_sbf import additive_beta, backfit, bandwidth_grid, boundary_kernel, interpolation_moments
+from .ata_sbf import additive_beta, backfit, bandwidth_grid, boundary_kernel, interpolation_moments
 from .utils import add_intercept, solve
 
 
