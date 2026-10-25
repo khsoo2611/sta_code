@@ -1,0 +1,33 @@
+{
+  "experiment": "M3",
+  "model": "M3",
+  "dimensions": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  "estimators": [
+    "ata_sbf",
+    "ata_csbf",
+    "lp_nw_mode_1",
+    "lp_ll_mode_1",
+    "krr_m",
+    "krr_r",
+    "ease_nw",
+    "ease_ll",
+    "ease_m",
+    "ease_r",
+    "pi"
+  ],
+  "n_values": [500],
+  "N": 5000,
+  "reps": 100,
+  "seed": 1,
+  "noise_sigma": 1.0,
+  "K": 5,
+  "r": 2,
+  "H_by_n": {
+    "500": 100
+  },
+  "cv_folds": 10,
+  "jobs": 12,
+  "sbf_normalization": "exact",
+  "csbf_normalization": "exact",
+  "run_name_pattern": "M3_n{n}_N5000"
+}

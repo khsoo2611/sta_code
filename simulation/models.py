@@ -1,4 +1,29 @@
-"""Models M1-M4 in Table 1, with X ~ Uniform[0, 1]^d."""
+"""M1-M4 regression functions and data generation.
+
+Parameters
+----------
+model : str
+    Model name: M1, M2, M3, or M4.
+X : array
+    Covariates at which the regression function is evaluated.
+n : int
+    Number of labeled observations, with both covariates and responses.
+N : int
+    Number of unlabeled observations, with covariates only.
+d : int
+    Number of covariates.
+seed : int
+    Random seed for data generation.
+noise_sigma : float
+    Standard deviation of the normal error added to the response.
+
+Functions
+---------
+regression_function computes the model values at X.
+projection_target gives the exact beta, with the intercept first.
+generate draws independent uniform covariates on [0, 1] and normal errors.
+It returns X, y, X_u, and the model values at X_u.
+"""
 
 import numpy as np
 
@@ -26,13 +51,15 @@ def regression_function(model, X):
 def projection_target(model, d):
     """beta0 minimizing E(m(X) - b0 - X'b)^2, in closed form."""
     if model == "M1":
-        # 10 x^2 projects to 10 x - 5/3 per coordinate; the product has mean 1, no linear part
+        # Each 10 x^2 term projects to 10 x - 5/3.
+        # The product has mean 1 and zero slope in the linear projection.
         return np.concatenate(([10.0 - 5.0 * d / 3.0], np.full(d, 10.0)))
     if model == "M2":
         slope = -40.0 / (9.0 * np.pi)  # (20/9) Cov(sin(6 pi x), x) / Var(x)
         return np.concatenate(([4.0 - 0.5 * d * slope], np.full(d, slope)))
     if model in ("M3", "M4"):
-        # 5 x^4 projects to 4 x - 1; the P2 products are orthogonal to (1, x)
+        # Each 5 x^4 term projects to 4 x - 1.
+        # The P2 products are orthogonal to the intercept and all covariates.
         return np.concatenate(([-1.0 * d], np.full(d, 4.0)))
     raise ValueError(f"unknown model {model!r}")
 

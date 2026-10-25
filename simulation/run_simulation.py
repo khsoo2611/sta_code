@@ -1,17 +1,30 @@
-"""Common simulation runner. Paper settings are in M1.py, M2.py, M3.py and M4.py.
+"""Run simulation experiments for M1-M4.
 
-From the command line:
+Settings
+--------
+model: Model name.
+estimators: Methods to compare.
+dimensions: Numbers of covariates to examine.
+n: Number of labeled observations, with covariates and responses.
+N: Number of unlabeled observations, with covariates only.
+reps: Number of independent repetitions at each dimension.
+seed: Random seed for the first repetition.
+noise_sigma: Standard deviation of the normal response error.
+K: Number of EASE cross-fitting groups. Each fit uses K - 1 groups
+   to predict the remaining group.
+r: Number of covariates after SS-SIR dimension reduction in EASE.
+H: Number of response intervals used by SS-SIR. If None, use n // 5.
+cv_folds: Number of groups for tuning CV. Direct methods use the labeled
+          sample. EASE uses the K - 1 training groups.
+jobs: Number of worker processes for running repetitions in parallel.
+run_name: Output folder name. If None, use the model and sample sizes.
 
-    python simulation/run_simulation.py M1 --estimators ata_sbf ata_csbf --n 500 --jobs 12
-
-or from Python:
-
-    config = SimulationConfig(model="M1", estimators=["ata_sbf", "pi"], n=200, reps=20)
-    summary, records = run_simulation(config)
-    ratio_table(summary)
-
-Each run writes outputs/simulation/<run name>/ with settings.json, summary.csv
-(RE by d and estimator) and records.pkl (one row per fit).
+Functions
+---------
+SimulationConfig stores these settings.
+run_one_simulation generates data and fits the methods for one repetition.
+run_simulation runs all dimensions and saves the results.
+It returns summary (RE values) and records (results from each repetition).
 """
 
 import argparse
@@ -21,42 +34,57 @@ import sys
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from estimation_methods.run_estimator import ESTIMATORS, Sample, fit_estimator
-from estimation_methods.utils import kfold, ols_beta, sq_error
-from experiment.runner import (
-    new_output_dir, risk_ratio, run_replications, save_results, save_settings,
-)
 from simulation.models import MODELS, generate, projection_target
+from utils import (
+    ESTIMATORS, Sample, fit_estimator, kfold, new_output_dir, ols_beta,
+    ratio_table, risk_ratio, run_replications, save_results, save_settings, sq_error,
+)
 
-OUTPUT = ROOT / "outputs" / "simulation"
+SIMULATION_OUTPUT = ROOT / "outputs" / "simulation"
+
+
+DEFAULT_ESTIMATORS = {
+    "M1": ("lp_ll_mode_1", "ata_sbf", "ata_csbf"),
+    "M2": ("krr_m", "ata_sbf", "ata_csbf"),
+    "M3": (
+        "ata_sbf", "ata_csbf", "lp_nw_mode_1", "lp_ll_mode_1", "krr_m", "krr_r",
+        "ease_nw", "ease_ll", "ease_m", "ease_r", "pi",
+    ),
+    "M4": (
+        "ata_sbf", "ata_csbf", "lp_nw_mode_1", "lp_ll_mode_1", "krr_m", "krr_r",
+        "ease_nw", "ease_ll", "ease_m", "ease_r", "pi",
+    ),
+}
 
 
 @dataclass
 class SimulationConfig:
     model: str = "M1"
-    estimators: tuple = ("ata_sbf", "ata_csbf", "lp_nw_n1_5", "lp_ll_n1_5",
-                         "lp_nw_theory", "lp_ll_theory", "krr_m", "krr_r")
+    estimators: tuple = None
     dimensions: tuple = tuple(range(2, 16))
     n: int = 500
     N: int = 5000
     reps: int = 100
     seed: int = 1
     noise_sigma: float = 1.0
-    K: int = 5  # EASE cross-fitting blocks
-    r: int = 2  # EASE SIR directions
-    H: int = None  # EASE SIR slices; n // 5 when None
+    K: int = 5  # Groups for EASE cross-fitting
+    r: int = 2  # Dimension after SS-SIR
+    H: int = None  # SS-SIR response intervals. If None, use n // 5.
     cv_folds: int = 10
     jobs: int = 1
     run_name: str = None
 
 
-def run_one(task):
+    def __post_init__(self):
+        if self.estimators is None:
+            self.estimators = DEFAULT_ESTIMATORS[self.model]
+
+
+def run_one_simulation(task):
     """Generate one sample, fit each estimator and collect its result."""
     config, d, rep = task
     seed = config.seed + rep
@@ -88,55 +116,29 @@ def run_one(task):
 
 
 def run_simulation(config):
-    """Run every dimension and replication of one setting; returns (summary, records)."""
+    """Run all dimensions and return the RE summary and repetition records."""
     config = replace(config, estimators=list(config.estimators),
                      dimensions=list(config.dimensions), H=config.H or config.n // 5)
     run_name = config.run_name or f"{config.model}_n{config.n}_N{config.N}"
-    folder = new_output_dir(OUTPUT / run_name)
-    save_settings(folder, {**asdict(config), "run_name": folder.name})
+    folder = new_output_dir(SIMULATION_OUTPUT / config.model / run_name)
+    save_settings(folder, {**asdict(config), "run_name": folder.name,
+                           "sbf_normalization": "exact", "csbf_normalization": "exact"})
 
     tasks = list(itertools.product([config], config.dimensions, range(config.reps)))
-    records = run_replications(tasks, run_one, config.jobs)
+    records = run_replications(tasks, run_one_simulation, config.jobs)
     records = records.sort_values(["d", "rep", "estimator_id"], ignore_index=True)
     summary = risk_ratio(records, ["model", "n", "N", "d", "estimator_id"])
-    print(ratio_table(summary, digits=3).to_string())
+    print(ratio_table(summary, config.model, digits=3).to_string())
     save_results(folder, summary[["d", "estimator_id", "ratio"]], records)
     print(f"saved to {folder}")
     return summary, records
 
 
-def run_labeled_size_sweep(config, labeled_sizes, unlabeled_sizes=None):
-    # One run per n, paired with unlabeled_sizes (or config.N for all of them).
-    # With config.H = None each run uses its own n // 5.
-    if unlabeled_sizes is None:
-        unlabeled_sizes = config.N
-    if np.isscalar(unlabeled_sizes):
-        unlabeled_sizes = [unlabeled_sizes] * len(labeled_sizes)
-    base = config.run_name or config.model
-    results = [
-        run_simulation(replace(config, n=n, N=N, run_name=f"{base}_n{n}_N{N}"))
-        for n, N in zip(labeled_sizes, unlabeled_sizes, strict=True)
-    ]
-    return pd.concat([summary for summary, _ in results], ignore_index=True), results
-
-
-def run_unlabeled_size_sweep(config, unlabeled_sizes):
-    """run_simulation for each N with n fixed at config.n."""
-    return run_labeled_size_sweep(config, [config.n] * len(unlabeled_sizes), unlabeled_sizes)
-
-
-def ratio_table(summary, index="d", digits=4):
-    table = summary.pivot_table(index=index, columns="estimator_id", values="ratio",
-                                aggfunc="first")
-    return table.round(digits)
-
-
 def main():
     default = SimulationConfig()
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description="Run M1, M2, M3 or M4.")
     parser.add_argument("model", choices=MODELS)
-    parser.add_argument("--estimators", nargs="+", choices=ESTIMATORS, default=default.estimators)
+    parser.add_argument("--estimators", nargs="+", choices=ESTIMATORS)
     parser.add_argument("--dimensions", nargs="+", type=int, default=default.dimensions)
     parser.add_argument("--n", type=int, default=default.n)
     parser.add_argument("--N", type=int, default=default.N)
@@ -150,11 +152,12 @@ def main():
     parser.add_argument("--jobs", type=int, default=default.jobs)
     parser.add_argument("--run-name")
     parser.add_argument("--print-config", action="store_true", help="print the settings and exit")
+
     args = vars(parser.parse_args())
     show_only = args.pop("print_config")
-
     config = SimulationConfig(**args)
-    print(json.dumps({**asdict(config), "H": config.H or config.n // 5}, indent=2))
+    print(json.dumps({**asdict(config), "H": config.H or config.n // 5,
+                      "sbf_normalization": "exact", "csbf_normalization": "exact"}, indent=2))
     if not show_only:
         run_simulation(config)
 

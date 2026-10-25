@@ -1,79 +1,105 @@
-"""ATA-CSBF: weighted smooth backfitting with a calibration step.
+"""ATA-CSBF: weighted and constrained smooth backfitting.
 
-Labeled point i gets weight w_i = ||Gamma_w^{-1} (1, X_i)||^2. The response and
-the columns of X1 / w are smoothed together, and m = m_y + m_basis @ lambda
-with lambda chosen so that mean(X1 * (y - m)) = 0 holds for the smoothed
-fitted values at the labeled points.
+Parameters
+----------
+X : array (n, d)
+    Labeled covariates, with n observations and d variables.
+y : array (n,)
+    Responses for the labeled observations.
+ngrid : int
+    Number of points used to represent each additive component.
+h : float or None
+    Bandwidth. None selects it by cross-validation (CV).
+sample : Sample
+    Data and CV folds used to select h and compute the sample weights.
+weights : array (n,)
+    Training sample weights supplied when h is fixed.
+
+Gamma_w uses labeled and unlabeled covariates to compute the weights.
+The final projection uses Gamma_u from unlabeled covariates only.
+
+Methods
+-------
+fit estimates the weighted additive components and constraint coefficients.
+predict gives a regression prediction for each new observation.
 """
 
 import numpy as np
 
-from .ata_sbf import additive_beta, backfit, bandwidth_grid, boundary_kernel, interpolation_moments
-from .utils import add_intercept, solve
+from utils import (
+    add_intercept, additive_beta, backfit, sbf_bandwidth_grid, boundary_kernel,
+    interpolation_moments, solve,
+)
 
 
-def csbf_weights(X, Gamma_w):
-    A = solve(Gamma_w, add_intercept(X).T).T
-    return np.sum(A * A, axis=1)
+class ATA_CSBF:
+    def __init__(self, X, y, ngrid=101):
+        self.X = X
+        self.y = y
+        self.ngrid = ngrid
 
+    def fit(self, h=None, *, sample=None, weights=None):
+        X, y, ngrid = self.X, self.y, self.ngrid
+        X1 = add_intercept(X)
+        self.cv_score = None
+        if h is None:
+            A = solve(sample.Gamma_w, add_intercept(X).T).T
+            weights = np.sum(A * A, axis=1)
+            M = interpolation_moments(sample, ngrid)
+            grid = sbf_bandwidth_grid(len(X))
+            scores = []
+            for h in grid:
+                fold_mse = []
+                for train, val in sample.folds:
+                    fitted = ATA_CSBF(X[train], y[train], ngrid).fit(
+                        h=h, weights=weights[train],
+                    )
+                    c, comps, lam = fitted.c, fitted.components, fitted.lam
+                    c_m = c[0] + c[1:] @ lam
+                    comps_m = comps[:, :, 0] + np.einsum(
+                        "dgp,p->dg", comps[:, :, 1:], lam, optimize=True,
+                    )
+                    err = y[val] - X1[val] @ additive_beta(sample, M, c_m, comps_m)
+                    fold_mse.append(np.mean(err**2) if np.all(np.isfinite(err)) else np.inf)
+                scores.append(np.mean(fold_mse))
+            best = int(np.nanargmin(scores))
+            h = grid[best]
+            self.cv_score = scores[best]
 
-def fit_csbf(X, y, w, h, ngrid):
-    # column 0 of c and comps is for y, the other d + 1 columns for the basis X1 / w
-    n, d = X.shape
-    X1 = add_intercept(X)
-    _, grid_w, K = boundary_kernel(X, h, ngrid)
-    density = np.maximum(K @ w / n, 1e-10)
-    Y = np.column_stack([y, X1 / w[:, None]])
-    c = w @ Y / (n * np.mean(w))
-    comps = backfit(K, grid_w, density, w[:, None] * (Y - c), K * w)
+        self.h = h
+        self.weights = weights
+        self.tuning = {"h": h}
+        w = self.weights
+        n, d = X.shape
+        _, grid_w, K = boundary_kernel(X, h, ngrid)
+        density = np.maximum(K @ w / n, 1e-10)
+        Y = np.column_stack([y, X1 / w[:, None]])
+        c = w @ Y / (n * np.mean(w))
+        comps = backfit(K, grid_w, density, w[:, None] * (Y - c), K * w)
 
-    # smoothed fitted values at the labeled points, then the calibration
-    fitted = np.tile(c, (n, 1))
-    for j in range(d):
-        fitted += K[j].T @ (grid_w[:, None] * comps[j])
-    base, basis = fitted[:, 0], fitted[:, 1:]
-    B = X1.T @ basis / n
-    lam = solve(B, X1.T @ (y - base) / n)
-    calibration = X1.T @ (y - (base + basis @ lam)) / n
-    diagnostics = {
-        "weight_min": float(np.min(w)),
-        "weight_median": float(np.median(w)),
-        "weight_max": float(np.max(w)),
-        "moment_condition": float(np.linalg.cond(B)),
-        "calibration_max_abs": float(np.max(np.abs(calibration))),
-    }
-    return c, comps, lam, diagnostics
+        fitted = np.tile(c, (n, 1))
+        for j in range(d):
+            fitted += K[j].T @ (grid_w[:, None] * comps[j])
+        base, basis = fitted[:, 0], fitted[:, 1:]
+        B = X1.T @ basis / n
+        lam = solve(B, X1.T @ (y - base) / n)
+        calibration = X1.T @ (y - (base + basis @ lam)) / n
+        self.diagnostics = {
+            "weight_min": float(np.min(w)),
+            "weight_median": float(np.median(w)),
+            "weight_max": float(np.max(w)),
+            "moment_condition": float(np.linalg.cond(B)),
+            "calibration_max_abs": float(np.max(np.abs(calibration))),
+        }
+        self.c, self.components, self.lam = c, comps, lam
+        return self
 
-
-def interpolate(c, components, X_new):
-    ngrid = components.shape[1]
-    out = np.tile(c, (len(X_new), 1))
-    for j in range(X_new.shape[1]):
-        pos = np.clip(X_new[:, j], 0.0, 1.0) * (ngrid - 1)
-        left = np.minimum(pos.astype(np.intp), ngrid - 2)
-        frac = (pos - left)[:, None]
-        out += components[j, left] * (1.0 - frac) + components[j, left + 1] * frac
-    return out
-
-
-def run(sample):
-    X, y, ngrid = sample.X, sample.y, sample.ngrid
-    X1 = add_intercept(X)
-    w = csbf_weights(X, sample.Gamma_w)
-    M = interpolation_moments(sample, ngrid)
-    grid = bandwidth_grid(len(X))
-    scores = []
-    for h in grid:
-        fold_mse = []
-        for train, val in sample.folds:
-            c, comps, lam, _ = fit_csbf(X[train], y[train], w[train], h, ngrid)
-            c_m = c[0] + c[1:] @ lam
-            comps_m = comps[:, :, 0] + np.einsum("dgp,p->dg", comps[:, :, 1:], lam, optimize=True)
-            err = y[val] - X1[val] @ additive_beta(sample, M, c_m, comps_m)
-            fold_mse.append(np.mean(err**2) if np.all(np.isfinite(err)) else np.inf)
-        scores.append(np.mean(fold_mse))
-    best = int(np.nanargmin(scores))
-    c, comps, lam, diagnostics = fit_csbf(X, y, w, grid[best], ngrid)
-    fitted = interpolate(c, comps, sample.X_u)
-    return {"m_u": fitted[:, 0] + fitted[:, 1:] @ lam, "tuning": {"h": grid[best]},
-            "cv_score": scores[best], **diagnostics}
+    def predict(self, X_new):
+        ngrid = self.components.shape[1]
+        fitted = np.tile(self.c, (len(X_new), 1))
+        for j in range(X_new.shape[1]):
+            pos = np.clip(X_new[:, j], 0.0, 1.0) * (ngrid - 1)
+            left = np.minimum(pos.astype(np.intp), ngrid - 2)
+            frac = (pos - left)[:, None]
+            fitted += self.components[j, left] * (1.0 - frac) + self.components[j, left + 1] * frac
+        return fitted[:, 0] + fitted[:, 1:] @ self.lam
