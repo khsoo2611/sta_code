@@ -4,6 +4,8 @@ Settings
 --------
 model: Model name.
 estimators: Methods to compare.
+            NW and LL share one bandwidth grid, capped at 0.8.
+            EASE uses final EASE coefficient CV.
 dimensions: Numbers of covariates to examine.
 n: Number of labeled observations, with covariates and responses.
 N: Number of unlabeled observations, with covariates only.
@@ -14,8 +16,8 @@ K: Number of EASE cross-fitting groups. Each fit uses K - 1 groups
    to predict the remaining group.
 r: Number of covariates after SS-SIR dimension reduction in EASE.
 H: Number of response intervals used by SS-SIR. If None, use n // 5.
-cv_folds: Number of groups for tuning CV. Direct methods use the labeled
-          sample. EASE uses the K - 1 training groups.
+cv_folds: Number of groups for tuning CV on the labeled sample.
+          EASE scores predictions from its final coefficients.
 jobs: Number of worker processes for running repetitions in parallel.
 run_name: Output folder name. If None, use the model and sample sizes.
 
@@ -40,7 +42,7 @@ if str(ROOT) not in sys.path:
 
 from simulation.models import MODELS, generate, projection_target
 from utils import (
-    ESTIMATORS, Sample, fit_estimator, kfold, new_output_dir, ols_beta,
+    ESTIMATORS, LP_BANDWIDTH_MAX, Sample, fit_estimator, kfold, new_output_dir, ols_beta,
     ratio_table, risk_ratio, run_replications, save_results, save_settings, sq_error,
 )
 
@@ -48,14 +50,14 @@ SIMULATION_OUTPUT = ROOT / "outputs" / "simulation"
 
 
 DEFAULT_ESTIMATORS = {
-    "M1": ("lp_ll_mode_1", "ata_sbf", "ata_csbf"),
+    "M1": ("lp_ll", "ata_sbf", "ata_csbf"),
     "M2": ("krr_m", "ata_sbf", "ata_csbf"),
     "M3": (
-        "ata_sbf", "ata_csbf", "lp_nw_mode_1", "lp_ll_mode_1", "krr_m", "krr_r",
+        "ata_sbf", "ata_csbf", "lp_nw", "lp_ll", "krr_m", "krr_r",
         "ease_nw", "ease_ll", "ease_m", "ease_r", "pi",
     ),
     "M4": (
-        "ata_sbf", "ata_csbf", "lp_nw_mode_1", "lp_ll_mode_1", "krr_m", "krr_r",
+        "ata_sbf", "ata_csbf", "lp_nw", "lp_ll", "krr_m", "krr_r",
         "ease_nw", "ease_ll", "ease_m", "ease_r", "pi",
     ),
 }
@@ -104,12 +106,11 @@ def run_one_simulation(task):
     }
     folds = kfold(n, config.cv_folds, seed)
     sample = Sample(seed, X, y, X_u, beta0, folds, m_true=m_u, info=info)
-    cache = {}
     records = []
     for name in config.estimators:
         record = fit_estimator(
             sample, name, K=config.K, r=config.r, H=config.H,
-            cv_folds=config.cv_folds, cache=cache,
+            cv_folds=config.cv_folds,
         )
         records.append(record)
     return records
@@ -121,8 +122,16 @@ def run_simulation(config):
                      dimensions=list(config.dimensions), H=config.H or config.n // 5)
     run_name = config.run_name or f"{config.model}_n{config.n}_N{config.N}"
     folder = new_output_dir(SIMULATION_OUTPUT / config.model / run_name)
-    save_settings(folder, {**asdict(config), "run_name": folder.name,
-                           "sbf_normalization": "exact", "csbf_normalization": "exact"})
+    settings = {**asdict(config), "run_name": folder.name,
+                "sbf_normalization": "exact", "csbf_normalization": "exact"}
+    if "ata_csbf" in config.estimators:
+        settings["csbf_weight_source"] = "unlabeled"
+        settings["csbf_weight_sample_size"] = config.N
+    if any(name in ("lp_nw", "lp_ll") for name in config.estimators):
+        settings["lp_bandwidth_max"] = LP_BANDWIDTH_MAX
+    if any(name.startswith("ease_") for name in config.estimators):
+        settings["ease_cv_target"] = "final_ease_beta"
+    save_settings(folder, settings)
 
     tasks = list(itertools.product([config], config.dimensions, range(config.reps)))
     records = run_replications(tasks, run_one_simulation, config.jobs)
@@ -156,8 +165,13 @@ def main():
     args = vars(parser.parse_args())
     show_only = args.pop("print_config")
     config = SimulationConfig(**args)
-    print(json.dumps({**asdict(config), "H": config.H or config.n // 5,
-                      "sbf_normalization": "exact", "csbf_normalization": "exact"}, indent=2))
+    settings = {**asdict(config), "H": config.H or config.n // 5,
+                "sbf_normalization": "exact", "csbf_normalization": "exact"}
+    if any(name in ("lp_nw", "lp_ll") for name in config.estimators):
+        settings["lp_bandwidth_max"] = LP_BANDWIDTH_MAX
+    if any(name.startswith("ease_") for name in config.estimators):
+        settings["ease_cv_target"] = "final_ease_beta"
+    print(json.dumps(settings, indent=2))
     if not show_only:
         run_simulation(config)
 

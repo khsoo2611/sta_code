@@ -1,11 +1,16 @@
 {
+  "K": 5,
+  "N": 5000,
+  "csbf_normalization": "exact",
+  "csbf_weight_sample_size": 5000,
+  "csbf_weight_source": "unlabeled",
+  "cv_folds": 10,
   "dataset": "miami",
-  "dimension": 12,
   "estimators": [
     "ata_sbf",
     "ata_csbf",
-    "lp_nw_mode_2",
-    "lp_ll_mode_2",
+    "lp_nw",
+    "lp_ll",
     "krr_m",
     "krr_r",
     "ease_nw",
@@ -14,12 +19,25 @@
     "ease_r",
     "pi"
   ],
-  "n_values": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
-  "N": 5000,
-  "reps": 100,
-  "seed": 202605310,
-  "K": 5,
+  "jobs": 12,
+  "lp_bandwidth_max": 0.8,
   "r": 2,
+  "reps": 100,
+  "sbf_normalization": "exact",
+  "seed": 202605310,
+  "dimension": 12,
+  "n_values": [
+    100,
+    200,
+    300,
+    400,
+    500,
+    600,
+    700,
+    800,
+    900,
+    1000
+  ],
   "H_by_n": {
     "100": 20,
     "200": 40,
@@ -32,9 +50,5 @@
     "900": 180,
     "1000": 200
   },
-  "cv_folds": 10,
-  "jobs": 12,
-  "sbf_normalization": "exact",
-  "csbf_normalization": "exact",
-  "run_name_pattern": "miami_n{n}_N5000"
+  "ease_cv_target": "final_ease_beta"
 }

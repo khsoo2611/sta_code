@@ -2,6 +2,8 @@
 
 This repository contains the data, code, and results for our paper, "Structural target-aware semi-supervised linear prediction."
 
+The code is available under the [MIT License](LICENSE).
+
 ## Estimation Methods
 
 `estimation_methods/` contains the following methods.
@@ -21,13 +23,6 @@ This repository contains the data, code, and results for our paper, "Structural 
 
 `simulation/models.py` contains M1-M4, sample generation, and the true coefficients. `simulation/run_simulation.py` runs the simulation experiments. `realdata/run_realdata.py` loads the real data and runs the repeated sampling experiments.
 
-Ordinary NW and LL use the following bandwidth grids, defined in `utils.py`.
-
-| Mode | Used for | Bandwidth candidates |
-|---|---|---|
-| `mode_1` | Simulation | 20 log-spaced values from `0.35*n^(-1/5)` to `0.5`. |
-| `mode_2` | Real data (Protein and Miami) | `n^(-k/(21*d))`, with `k = 1, ..., 20`. |
-
 ## Data
 
 ### Protein
@@ -40,15 +35,15 @@ Ordinary NW and LL use the following bandwidth grids, defined in `utils.py`.
 
 `realdata/data/miami/` contains MiamiHousing2016 from OpenML, data ID 43093. The dataset has 13,932 observations.
 
-`miami_openml_43093.arff` is the original data, and `miami_openml_43093.csv` is its CSV version. `miami_openml_43093_processed.csv` contains the 12 covariates used in the paper and the response `LOG_SALE_PRC`, the natural logarithm of the sale price.
+`miami_openml_43093.arff` is the original data. `miami_openml_43093.csv` is an intermediate CSV generated from the ARFF during preprocessing and is not included. `miami_openml_43093_processed.csv` contains the 12 covariates used in the paper and the response `LOG_SALE_PRC`, the natural logarithm of the sale price.
 
-Each data folder contains `DATA_LICENSE.md` with the data source and usage terms.
+Data sources and usage terms are in [Protein DATA_LICENSE.md](realdata/data/protein/DATA_LICENSE.md) and [Miami DATA_LICENSE.md](realdata/data/miami/DATA_LICENSE.md).
 
 The real-data notebooks make the processed CSV only when it is missing. If it already exists, they use that file.
 
 ## Results
 
-`results/` contains the saved experiment results for M1-M4, Protein, and Miami. New runs do not replace these files.
+The six CSV files in `results/` contain the saved results for M1-M4, Protein, and Miami. New runs do not replace these files.
 
 RE, called `ratio` in the code, is the sum of the OLS squared coefficient errors divided by the sum for the method over the replications. A value above 1 means a smaller coefficient error than OLS.
 
@@ -56,7 +51,7 @@ RE, called `ratio` in the code, is the sum of the OLS squared coefficient errors
 
 `results/simulation/` contains the M1, M2, M3, and M4 folders.
 
-Each model folder contains one result CSV: `M1.csv`, `M2.csv`, `M3.csv`, or `M4.csv`. All four use n = 500.
+Each model folder contains one result CSV: `M1.csv`, `M2.csv`, `M3.csv`, or `M4.csv`. All four use n = 500, N = 5000, d = 2, ..., 15, and 100 replications.
 
 Rows are estimation methods, and columns are covariate dimensions. Each model folder contains `settings.json` with the experiment settings.
 
@@ -64,7 +59,7 @@ Rows are estimation methods, and columns are covariate dimensions. Each model fo
 
 `results/realdata/miami/` contains `miami.csv`, and `results/realdata/protein/` contains `protein.csv`. Rows are estimation methods, and columns are labeled sample sizes. Each folder contains `settings.json`.
 
-Both datasets use n = 100, 200, ..., 1000 and N = 5000.
+Both datasets use n = 100, 200, ..., 1000 and N = 5000, with 100 replications for each n.
 
 ### Example
 

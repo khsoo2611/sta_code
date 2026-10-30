@@ -41,10 +41,8 @@ def regression_function(model, X):
     if model == "M3":
         return 5.0 * np.sum(X**4, axis=1)
     if model == "M4":
-        # sum over pairs j < k of P2(x_j) P2(x_k), P2 the shifted Legendre polynomial
-        p2 = 6.0 * X**2 - 6.0 * X + 1.0
-        pairs = 0.5 * (np.sum(p2, axis=1) ** 2 - np.sum(p2**2, axis=1))
-        return 5.0 * np.sum(X**4, axis=1) + 3.0 * pairs
+        product = np.prod(4.0 / (np.pi * (1.0 + (2.0 * X - 1.0)**2)), axis=1)
+        return 10.0 * np.sum(X**4, axis=1) + 21.0 * product
     raise ValueError(f"unknown model {model!r}")
 
 
@@ -57,10 +55,11 @@ def projection_target(model, d):
     if model == "M2":
         slope = -40.0 / (9.0 * np.pi)  # (20/9) Cov(sin(6 pi x), x) / Var(x)
         return np.concatenate(([4.0 - 0.5 * d * slope], np.full(d, slope)))
-    if model in ("M3", "M4"):
+    if model == "M3":
         # Each 5 x^4 term projects to 4 x - 1.
-        # The P2 products are orthogonal to the intercept and all covariates.
         return np.concatenate(([-1.0 * d], np.full(d, 4.0)))
+    if model == "M4":
+        return np.concatenate(([21.0 - 2.0 * d], np.full(d, 8.0)))
     raise ValueError(f"unknown model {model!r}")
 
 
@@ -69,4 +68,4 @@ def generate(model, n, N, d, seed, noise_sigma=1.0):
     X_all = rng.uniform(0.0, 1.0, size=(n + N, d))
     m = regression_function(model, X_all)
     eps = rng.normal(0.0, noise_sigma, size=n)
-    return X_all[:n], m[:n] + eps, X_all[n:], m[n:]  # X, y, X_u and m(X_u)
+    return X_all[:n], m[:n] + eps, X_all[n:], m[n:]

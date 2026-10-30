@@ -4,6 +4,8 @@ Settings
 --------
 dataset: Data name, miami or protein.
 estimators: Methods to compare.
+            NW and LL share one bandwidth grid, capped at 0.8.
+            EASE uses final EASE coefficient CV.
 n: Number of labeled observations, with covariates and responses.
 N: Number of unlabeled observations, using covariates only.
 reps: Number of random data splits.
@@ -12,8 +14,8 @@ K: Number of EASE cross-fitting groups. Each fit uses K - 1 groups
    to predict the remaining group.
 r: Number of covariates after SS-SIR dimension reduction in EASE.
 H: Number of response intervals used by SS-SIR. If None, use n // 5.
-cv_folds: Number of groups for tuning CV. Direct methods use the labeled
-          sample. EASE uses the K - 1 training groups.
+cv_folds: Number of groups for tuning CV on the labeled sample.
+          EASE scores predictions from its final coefficients.
 jobs: Number of worker processes for running repetitions in parallel.
 run_name: Output folder name. If None, use the dataset and sample sizes.
 
@@ -40,7 +42,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils import (
-    ESTIMATORS, Sample, fit_estimator, kfold, new_output_dir, ols_beta,
+    ESTIMATORS, LP_BANDWIDTH_MAX, Sample, fit_estimator, kfold, new_output_dir, ols_beta,
     ratio_table, risk_ratio, run_replications, save_results, save_settings, sq_error,
 )
 
@@ -104,22 +106,29 @@ def run_one_realdata(task):
     }
     folds = kfold(n, config["cv_folds"], seed)
     sample = Sample(seed, X[labeled], y[labeled], X[unlabeled], beta0, folds, info=info)
-    cache = {}
     records = []
     for name in config["estimators"]:
         record = fit_estimator(
             sample, name, K=config["K"], r=config["r"], H=config["H"],
-            cv_folds=config["cv_folds"], cache=cache,
+            cv_folds=config["cv_folds"],
         )
         records.append(record)
     return records
 
 
 def make_config(dataset, estimators, n, N, reps, seed, K, r, H, cv_folds, jobs):
-    return {"dataset": dataset, "estimators": list(estimators), "n": n, "N": N, "reps": reps,
-            "seed": DATASETS[dataset]["seed"] if seed is None else seed,
-            "K": K, "r": r, "H": H or n // 5, "cv_folds": cv_folds, "jobs": jobs,
-            "sbf_normalization": "exact", "csbf_normalization": "exact"}
+    config = {"dataset": dataset, "estimators": list(estimators), "n": n, "N": N, "reps": reps,
+              "seed": DATASETS[dataset]["seed"] if seed is None else seed,
+              "K": K, "r": r, "H": H or n // 5, "cv_folds": cv_folds, "jobs": jobs,
+              "sbf_normalization": "exact", "csbf_normalization": "exact"}
+    if "ata_csbf" in config["estimators"]:
+        config["csbf_weight_source"] = "unlabeled"
+        config["csbf_weight_sample_size"] = N
+    if any(name in ("lp_nw", "lp_ll") for name in config["estimators"]):
+        config["lp_bandwidth_max"] = LP_BANDWIDTH_MAX
+    if any(name.startswith("ease_") for name in config["estimators"]):
+        config["ease_cv_target"] = "final_ease_beta"
+    return config
 
 
 def run_realdata(dataset, *, estimators, n, N, reps=100, seed=None, K=5, r=2, H=None,

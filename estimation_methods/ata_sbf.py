@@ -12,6 +12,9 @@ h : float or None
     Bandwidth. None selects it by cross-validation (CV).
 sample : Sample
     Labeled data, unlabeled covariates, and CV folds used to select h.
+kernel : tuple or None
+    (grid_w, K) from normalized_kernel(X, h, ngrid), when already computed.
+    CV computes it once for all labeled points and passes the training columns.
 
 Methods
 -------
@@ -22,7 +25,7 @@ predict gives a regression prediction for each new observation.
 import numpy as np
 
 from utils import (
-    add_intercept, additive_beta, backfit, sbf_bandwidth_grid, boundary_kernel,
+    add_intercept, additive_beta, backfit, sbf_bandwidth_grid, normalized_kernel,
     interpolation_moments,
 )
 
@@ -33,18 +36,22 @@ class ATA_SBF:
         self.y = y
         self.ngrid = ngrid
 
-    def fit(self, h=None, *, sample=None):
+    def fit(self, h=None, *, sample=None, kernel=None):
         X, y, ngrid = self.X, self.y, self.ngrid
-        self.cv_score = None
         if h is None:
             X1 = add_intercept(X)
             M = interpolation_moments(sample, ngrid)
             grid = sbf_bandwidth_grid(len(X))
             scores = []
             for h in grid:
+                # Each column of K depends only on its own observation, so the
+                # training folds take columns of one computation.
+                grid_w, K_all = normalized_kernel(X, h, ngrid)
                 fold_mse = []
                 for train, val in sample.folds:
-                    fitted = ATA_SBF(X[train], y[train], ngrid).fit(h=h)
+                    fitted = ATA_SBF(X[train], y[train]).fit(
+                        h=h, kernel=(grid_w, K_all[:, :, train]),
+                    )
                     err = y[val] - X1[val] @ additive_beta(
                         sample, M, fitted.c, fitted.components,
                     )
@@ -56,10 +63,9 @@ class ATA_SBF:
             best = int(np.nanargmin(scores))
             h = grid[best]
             self.cv_score = scores[best]
+            self.tuning = {"h": h}
 
-        self.h = h
-        self.tuning = {"h": h}
-        _, grid_w, K = boundary_kernel(X, h, ngrid)
+        grid_w, K = kernel if kernel is not None else normalized_kernel(X, h, ngrid)
         density = np.maximum(K.sum(axis=2) / len(X), 1e-8)
         self.c = y.mean()
         self.components = backfit(K, grid_w, density, y - self.c)

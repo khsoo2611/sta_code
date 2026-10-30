@@ -9,7 +9,7 @@ MiamiHousing2016 from OpenML (data ID 43093), created by Steven C. Bourassa.
 Files:
 
 - `miami_openml_43093.arff`: the file downloaded from OpenML
-- `miami_openml_43093.csv`: the same data as CSV
+- `miami_openml_43093.csv`: an intermediate CSV generated from the ARFF during preprocessing, not included
 - `miami_openml_43093_processed.csv`: made by `realdata/runner/miami_runner.ipynb`
 
 The CSV files are derived from the original data and are under the same

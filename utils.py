@@ -2,12 +2,13 @@
 
 Sample stores labeled data (X, y), unlabeled covariates X_u, and CV folds.
 X has n observations and d covariates. X_u has N observations.
-Gamma_w uses all n + N observations to compute ATA-CSBF weights.
-Gamma_u uses the N unlabeled observations for the final projection.
+Gamma_u uses the N unlabeled observations for ATA-CSBF weights and projection.
 
 fit_estimator fits one method and records its coefficient error.
 For direct methods with tuning, CV uses the prediction error of the projected beta.
-EASE chooses tuning by the prediction error of the regression function.
+EASE scores its final linear coefficients on the same CV folds.
+select_lp_bandwidth computes NW and LL CV predictions for all folds at once,
+sharing the kernel weights between folds.
 
 save_settings saves the run settings.
 save_results saves summary.csv and records.pkl.
@@ -104,7 +105,6 @@ class Sample:
 
     X_u1 adds an intercept column to the unlabeled covariates.
     Gamma_u = X_u1.T @ X_u1 / N.
-    Gamma_w is the same matrix computed from all n + N observations.
     Direct methods share the training and validation indices in folds.
     """
 
@@ -116,13 +116,10 @@ class Sample:
     folds: list
     m_true: np.ndarray = None  # true regression function on U (simulations only)
     info: dict = field(default_factory=dict)  # copied into every result record
-    ngrid: int = 101  # grid size of the additive components
 
     def __post_init__(self):
         self.X_u1 = add_intercept(self.X_u)
         self.Gamma_u = self.X_u1.T @ self.X_u1 / len(self.X_u)
-        X1_all = add_intercept(np.vstack([self.X, self.X_u]))
-        self.Gamma_w = X1_all.T @ X1_all / len(X1_all)
 
     def project(self, m_u):
         """Coefficients of the linear projection of m_u on (1, X_u)."""
@@ -140,11 +137,11 @@ def trapezoid_weights(t):
     return (np.append(dt, 0.0) + np.append(0.0, dt)) / 2.0
 
 
-def boundary_kernel(X, h, ngrid):
+def normalized_kernel(X, h, ngrid):
     """Epanechnikov kernel weights normalized over [0, 1].
 
     Divide K_h(t_g - X_ij) by its integral over [0, 1] for each observation.
-    Return the grid, trapezoid integration weights, and kernel weights K.
+    Return trapezoid integration weights and kernel weights K.
     The kernel integral is computed from its formula.
     """
     n, d = X.shape
@@ -157,7 +154,7 @@ def boundary_kernel(X, h, ngrid):
         a = (np.maximum(0.0, x - h) - x) / h
         b = (np.minimum(1.0, x + h) - x) / h
         K[j] /= 0.75 * ((b - a) - (b**3 - a**3) / 3.0)
-    return t, trapezoid_weights(t), K
+    return trapezoid_weights(t), K
 
 
 def backfit(K, grid_w, density, wy, K_proj=None, max_iter=100, tol=1e-8):
@@ -234,19 +231,25 @@ def additive_beta(sample, M, c, components):
     return solve(sample.Gamma_u, moment)
 
 
-def mode_1_grid(n):
-    """20 geometrically spaced bandwidths from 0.35 * n^(-1/5) to 0.5."""
-    base = n ** (-1 / 5)
-    return base * np.geomspace(0.35, 0.5 / base, 20)
+LP_BANDWIDTH_MAX = 0.8
 
 
-def mode_2_grid(n, d):
-    """h_k = n^(-k / (21 d)), k = 1, ..., 20."""
-    return n ** -(np.arange(1, 21) / (21 * d))
+def lp_bandwidth_grid(n, d):
+    """Cap n^(-k / (21 d)), k = 1, ..., 20, at 0.8 and remove duplicates."""
+    grid = n ** -(np.arange(1, 21) / (21 * d))
+    return np.unique(np.minimum(grid, LP_BANDWIDTH_MAX))[::-1]
 
 
-def epanechnikov_weights(U):
-    return np.prod(0.75 * np.maximum(1.0 - U**2, 0.0), axis=-1)
+def epanechnikov_weights(U, out=None):
+    """Product Epanechnikov weights. With out, the factors are computed in that buffer."""
+    if out is None:
+        return np.prod(0.75 * np.maximum(1.0 - U**2, 0.0), axis=-1)
+    # the same operations in place, without temporary arrays
+    np.multiply(U, U, out=out)
+    np.subtract(1.0, out, out=out)
+    np.maximum(out, 0.0, out=out)
+    np.multiply(0.75, out, out=out)
+    return np.prod(out, axis=-1)
 
 
 def gaussian_weights(U):
@@ -258,18 +261,65 @@ def gaussian_weights(U):
 KERNELS = {"epanechnikov": epanechnikov_weights, "gaussian": gaussian_weights}
 
 
-def select_lp_bandwidth(regression, kernel, sample, grid, *, project=None):
+def fold_order(folds, n):
+    """Labeled indices sorted by validation fold, and the fold boundaries.
+
+    Require at least two folds whose validation sets partition range(n).
+    Each training set must contain the remaining observations, as in kfold.
+    """
+    if len(folds) < 2:
+        raise ValueError("At least two CV folds are required")
+    order = np.concatenate([val for _, val in folds])
+    if not np.array_equal(np.sort(order), np.arange(n)):
+        raise ValueError("Validation folds must partition the labeled sample")
+    for train, val in folds:
+        if not np.array_equal(np.sort(train), np.setdiff1d(np.arange(n), val)):
+            raise ValueError("Training indices must exclude the validation fold")
+    return order, np.cumsum([0] + [len(val) for _, val in folds])
+
+
+def leave_one_out_sums(parts):
+    """For each fold, add the parts from all other folds.
+
+    Use prefix and suffix sums to avoid subtracting nearly equal sums.
+    Each part is a tuple of arrays.
+    """
+    def add(p, q):
+        if p is None or q is None:
+            return q if p is None else p
+        return tuple(a + b for a, b in zip(p, q))
+
+    prefix, suffix = [None], [None]
+    for part in parts[:-1]:
+        prefix.append(add(prefix[-1], part))
+    for part in parts[:0:-1]:
+        suffix.append(add(suffix[-1], part))
+    return [add(p, q) for p, q in zip(prefix, suffix[::-1])]
+
+
+def full_rank(A, tol=1e-10):
+    """Use eigenvalues for a fast rank check of symmetric matrices.
+
+    Use matrix_rank near the cutoff to check the result with SVD.
+    """
+    smallest = np.min(np.abs(np.linalg.eigvalsh(A)), axis=-1)
+    full = smallest > tol
+    near = (smallest > 0.1 * tol) & (smallest < 10.0 * tol)
+    if near.any():
+        full[near] = np.linalg.matrix_rank(A[near], tol=tol) == A.shape[-1]
+    return full
+
+
+def select_lp_bandwidth(regression, sample, grid):
     X, y = sample.X, sample.y
     X1 = add_intercept(X)
-    if project is None:
-        project = sample.project
+    preds = regression.cv_predictions(X, y, grid, sample.folds, sample.X_u)
     scores = []
-    for h in grid:
+    for i in range(len(grid)):
         fold_mse = []
-        for train, val in sample.folds:
-            fitted = regression(X[train], y[train], kernel=kernel).fit(h=h)
-            m_u = fitted.predict(sample.X_u)
-            err = y[val] - X1[val] @ project(m_u)
+        for k, (_, val) in enumerate(sample.folds):
+            m_u = preds[i, k]
+            err = y[val] - X1[val] @ sample.project(m_u)
             fold_mse.append(np.mean(err**2) if np.all(np.isfinite(err)) else np.inf)
         scores.append(np.mean(fold_mse))
     best = int(np.nanargmin(scores))
@@ -287,8 +337,19 @@ def median_sq_dist(X):
     return float(np.median(D2)) if D2.size else 1.0
 
 
+def median_distance(X):
+    """Median Euclidean distance between distinct labeled observations."""
+    D2 = sq_dist(X, X)[np.triu_indices(len(X), k=1)]
+    D2 = D2[np.isfinite(D2)]
+    distance = float(np.median(np.sqrt(D2))) if D2.size else 0.0
+    return distance if distance > 0.0 else 1.0
+
+
 def ridge_for_df(eigvals, target_df):
-    """Ridge values with sum(l / (l + ridge)) = target_df, found by bisection."""
+    """Choose ridge values by bisection, with a lower bound of 1e-12.
+
+    Use the lower bound when the target is not below the kernel rank.
+    """
     lam = np.maximum(eigvals[np.isfinite(eigvals)], 0.0)
     target = np.asarray(target_df, dtype=float)
     ridge = np.full_like(target, 1e-12)  # used when the target is not below rank(K)
@@ -315,23 +376,20 @@ def eigh_psd(K):
     return np.maximum(lam, 0.0), V
 
 
-def krr_cv_scores(K, y, folds, ridge_grid, K_u=None, X1=None, sample=None):
+def krr_cv_scores(K, ridge_grid, K_u, X1, sample):
     """Mean CV error for each ridge candidate.
 
-    ridge_grid gives the candidate values for each training fold.
-    With K_u, project the predictions on X_u and score X1 @ beta on validation data.
-    Without K_u, score the regression predictions on validation data.
+    ridge_grid contains the ridge values shared by the training folds.
+    Project predictions on X_u and score X1 @ beta on validation data.
     """
+    y, folds = sample.y, sample.folds
     total = 0.0
     for train, val in folds:
         lam, V = eigh_psd(K[np.ix_(train, train)])
-        ridges = np.maximum(ridge_grid(lam, train.size), 1e-12)
+        ridges = np.maximum(ridge_grid, 1e-12)
         alpha = V @ ((V.T @ y[train])[:, None] / (lam[:, None] + ridges[None, :]))
-        if K_u is None:
-            pred = K[np.ix_(val, train)] @ alpha
-        else:
-            beta = solve(sample.Gamma_u, sample.X_u1.T @ K_u[:, train] / len(K_u) @ alpha)
-            pred = X1[val] @ beta
+        beta = solve(sample.Gamma_u, sample.X_u1.T @ K_u[:, train] / len(K_u) @ alpha)
+        pred = X1[val] @ beta
         mse = np.mean((pred - y[val, None]) ** 2, axis=0)
         total = total + np.where(np.isfinite(mse), mse, np.inf)
     return total / len(folds)
@@ -359,7 +417,7 @@ def run_replications(tasks, run_one, jobs, initializer=None, initargs=()):
                 for future in cf.as_completed([pool.submit(run_one, task) for task in tasks]):
                     records.extend(future.result())
                     bar.update()
-    # Fields missing from every record are omitted from records.pkl.
+    # Drop None and NaN values from each record.
     rows = []
     for record in records:
         row = {}
@@ -372,17 +430,17 @@ def run_replications(tasks, run_one, jobs, initializer=None, initargs=()):
 
 
 ESTIMATORS = [
-    "ata_sbf", "ata_csbf", "lp_nw_mode_1", "lp_nw_mode_2", "lp_ll_mode_1", "lp_ll_mode_2",
+    "ata_sbf", "ata_csbf", "lp_nw", "lp_ll",
     "krr_m", "krr_r", "pi", "ease_nw", "ease_ll", "ease_m", "ease_r",
 ]
 
 
-def fit_estimator(sample, name, *, K, r, H, cv_folds, cache):
+def fit_estimator(sample, name, *, K, r, H, cv_folds):
     from estimation_methods.ata_csbf import ATA_CSBF
     from estimation_methods.ata_sbf import ATA_SBF
     from estimation_methods.ease import EASE
     from estimation_methods.krr_m import KRR_M
-    from estimation_methods.krr_r import KRR_R
+    from estimation_methods.krr_r import KRR_R, RBF_Q, RBF_DF_FRACTION
     from estimation_methods.nw import NW
     from estimation_methods.ll import LL
     from estimation_methods.pi import PI
@@ -390,13 +448,10 @@ def fit_estimator(sample, name, *, K, r, H, cv_folds, cache):
     DIRECT = {
         "ata_sbf": ATA_SBF,
         "ata_csbf": ATA_CSBF,
-        "lp_nw_mode_1": NW,
-        "lp_nw_mode_2": NW,
-        "lp_ll_mode_1": LL,
-        "lp_ll_mode_2": LL,
+        "lp_nw": NW,
+        "lp_ll": LL,
         "krr_m": KRR_M,
         "krr_r": KRR_R,
-        "pi": PI,
     }
     EASE_SMOOTHERS = {
         "ease_nw": "nw",
@@ -409,27 +464,16 @@ def fit_estimator(sample, name, *, K, r, H, cv_folds, cache):
     if name in EASE_SMOOTHERS:
         fitted = EASE(
             sample, EASE_SMOOTHERS[name], K=K, r=r, H=H,
-            cv_folds=cv_folds, cache=cache,
+            cv_folds=cv_folds,
         ).fit()
         beta, m_u = fitted.beta, fitted.m_u
     elif name == "pi":
         fitted = PI(sample).fit()
         beta = fitted.beta
     else:
-        if name in ("ata_sbf", "ata_csbf"):
-            fitted = DIRECT[name](sample.X, sample.y, sample.ngrid).fit(sample=sample)
-        elif name.startswith("lp_"):
-            grid = "mode_1" if name.endswith("_mode_1") else "mode_2"
-            fitted = DIRECT[name](sample.X, sample.y).fit(sample=sample, grid=grid)
-        else:
-            fitted = DIRECT[name](sample.X, sample.y).fit(sample.folds, sample=sample)
+        fitted = DIRECT[name](sample.X, sample.y).fit(sample=sample)
         m_u = fitted.predict(sample.X_u)
-        if sample.info.get("model") == "M1" and name == "lp_ll_mode_1":
-            # M1 used unscaled cross-products for the final projection.
-            Z = sample.X_u1
-            beta = solve(Z.T @ Z, Z.T @ m_u.reshape(-1, 1))
-        else:
-            beta = sample.project(m_u)
+        beta = sample.project(m_u)
     beta = np.reshape(beta, -1)
     record = {
         **sample.info,
@@ -441,12 +485,48 @@ def fit_estimator(sample, name, *, K, r, H, cv_folds, cache):
     if name != "pi":
         record["tuning"] = fitted.tuning
         record["cv_score"] = fitted.cv_score
+    if name in EASE_SMOOTHERS:
+        record["cv_target"] = "final_ease_beta"
+        record.update(
+            tuning_grid=fitted.tuning_grid,
+            selected_candidate=fitted.selected_candidate,
+            selected_candidate_index=fitted.selected_candidate_index,
+            cv_scores=fitted.cv_scores,
+            cv_fold_scores=fitted.cv_fold_scores,
+            cv_fold_betas=fitted.cv_fold_betas,
+            cv_fold_tuning=fitted.cv_fold_tuning,
+            cv_all_fold_tuning=fitted.cv_all_fold_tuning,
+            cv_validation_indices=fitted.cv_validation_indices,
+            cv_fold_seed=sample.seed,
+            ease_eta=fitted.eta,
+            ease_delta=fitted.delta,
+            ease_beta_snp=fitted.beta_snp,
+            ease_H_policy="fixed_configured_H",
+            ease_H=H,
+        )
+    elif name == "krr_r":
+        record.update(
+            tuning_grid={"q": RBF_Q.tolist(), "df_fraction": RBF_DF_FRACTION.tolist()},
+            cv_scores=fitted.cv_scores,
+            cv_fold_scores=fitted.cv_fold_scores,
+            cv_fold_gammas=fitted.cv_fold_gammas,
+            cv_fold_ridges=fitted.cv_fold_ridges,
+            cv_fold_median_sq_dist=fitted.cv_fold_median_sq_dist,
+            cv_selected_indices=fitted.cv_selected_indices,
+            cv_fold_seed=sample.seed,
+            cv_validation_indices=[val.copy() for _, val in sample.folds],
+            kernel_scale_source="fold_training_sample",
+        )
     if name in ("ata_sbf", "ata_csbf"):
         record["kernel_normalization"] = "exact"
     if name == "ata_csbf":
         record.update(fitted.diagnostics)
+        record["weight_source"] = "unlabeled"
+        record["weight_sample_size"] = len(sample.X_u)
     elif name.startswith("lp_"):
         record["fallback_fraction"] = fitted.fallback_fraction
+        record["bandwidth_max"] = LP_BANDWIDTH_MAX
+        record["tuning_grid"] = lp_bandwidth_grid(len(sample.X), sample.X.shape[1]).tolist()
     if m_u is not None and sample.m_true is not None:
         diff = m_u - sample.m_true
         moment = np.mean(sample.X_u1 * diff[:, None], axis=0)
@@ -489,30 +569,13 @@ def check_table(table, model, columns):
     return table
 
 
-def paper_label(estimator_id, model):
-    """Row name in the paper, or None for estimators the paper does not show."""
-    if estimator_id.startswith("lp_"):
-        # Saved simulations use mode_1. Real-data results use mode_2.
-        grid = "_mode_2" if model in ("protein", "miami") else "_mode_1"
-        if not estimator_id.endswith(grid):
-            return None
-        estimator_id = estimator_id.removesuffix(grid)
-    label = ESTIMATOR_LABELS.get(estimator_id)
-    return label
-
-
 def ratio_table(summary, model, digits=None):
     data = summary.copy()
     names = set(data["estimator_id"])
-    labels = {}
-    for name in names:
-        base = name.removesuffix("_mode_1").removesuffix("_mode_2")
-        label = ESTIMATOR_LABELS.get(base, name)
-        if {f"{base}_mode_1", f"{base}_mode_2"}.issubset(names):
-            mode = "mode_1" if name.endswith("_mode_1") else "mode_2"
-            label += f" ({mode})"
-        labels[name] = label
-    data["Procedure"] = data["estimator_id"].map(labels)
+    unsupported = sorted(names - ESTIMATOR_LABELS.keys())
+    if unsupported:
+        raise ValueError(f"unsupported estimator IDs: {unsupported}")
+    data["Procedure"] = data["estimator_id"].map(ESTIMATOR_LABELS)
     column = "n" if model in ("protein", "miami") else "d"
     table = data.pivot(index="Procedure", columns=column, values="ratio")
     rows = [name for name in TABLE_ROWS.get(model, []) if name in table.index]
@@ -527,11 +590,8 @@ def read_reference():
     for model in TABLE_ROWS:
         real = model in ("protein", "miami")
         source = folder / ("realdata" if real else "simulation") / model
-        if real:
-            n, name = None, f"{model}.csv"
-        else:
-            n, name = 500, f"{model}.csv"
-        table = pd.read_csv(source / name, index_col="Procedure",
+        n = None if real else 500
+        table = pd.read_csv(source / f"{model}.csv", index_col="Procedure",
                             float_precision="round_trip")
         table.columns = table.columns.astype(int)
         tables[model, n] = check_table(table, model, SAMPLE_SIZES if n is None else DIMENSIONS)
@@ -561,7 +621,12 @@ def read_runs(folders):
 
         summary = pd.read_csv(folder / "summary.csv", float_precision="round_trip")
         for rec in summary.to_dict(orient="records"):
-            label = paper_label(rec["estimator_id"], model)
+            estimator_id = rec["estimator_id"]
+            if (estimator_id.startswith("ease_")
+                    and settings.get("ease_cv_target") != "final_ease_beta"):
+                # Read only final-coefficient EASE results.
+                continue
+            label = ESTIMATOR_LABELS.get(estimator_id)
             if label in TABLE_ROWS[model]:
                 rows.append({"model": model, "n": n, "d": int(rec.get("d", 0)),
                              "estimator": label, "ratio": float(rec["ratio"])})
@@ -570,7 +635,7 @@ def read_runs(folders):
     if data.empty:
         raise ValueError("no results for the main-paper tables")
     if data.duplicated(["model", "n", "d", "estimator"]).any():
-        raise ValueError("the same result appears in more than one run")
+        raise ValueError("duplicate paper rows: choose one run per method and setting")
     tables = {}
     for model, part in data.groupby("model"):
         if model in ("protein", "miami"):

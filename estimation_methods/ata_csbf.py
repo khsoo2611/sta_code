@@ -14,9 +14,13 @@ sample : Sample
     Data and CV folds used to select h and compute the sample weights.
 weights : array (n,)
     Training sample weights supplied when h is fixed.
+kernel : tuple or None
+    (grid_w, K) from normalized_kernel(X, h, ngrid), when already computed.
+    CV computes it once for all labeled points and passes the training columns.
+diagnostics : bool
+    Compute diagnostic values. Internal CV fits skip them.
 
-Gamma_w uses labeled and unlabeled covariates to compute the weights.
-The final projection uses Gamma_u from unlabeled covariates only.
+The weights and final projection use Gamma_u from the N unlabeled observations.
 
 Methods
 -------
@@ -27,7 +31,7 @@ predict gives a regression prediction for each new observation.
 import numpy as np
 
 from utils import (
-    add_intercept, additive_beta, backfit, sbf_bandwidth_grid, boundary_kernel,
+    add_intercept, additive_beta, backfit, sbf_bandwidth_grid, normalized_kernel,
     interpolation_moments, solve,
 )
 
@@ -38,21 +42,24 @@ class ATA_CSBF:
         self.y = y
         self.ngrid = ngrid
 
-    def fit(self, h=None, *, sample=None, weights=None):
+    def fit(self, h=None, *, sample=None, weights=None, kernel=None, diagnostics=True):
         X, y, ngrid = self.X, self.y, self.ngrid
         X1 = add_intercept(X)
-        self.cv_score = None
         if h is None:
-            A = solve(sample.Gamma_w, add_intercept(X).T).T
+            A = solve(sample.Gamma_u, X1.T).T
             weights = np.sum(A * A, axis=1)
             M = interpolation_moments(sample, ngrid)
             grid = sbf_bandwidth_grid(len(X))
             scores = []
             for h in grid:
+                # Each column of K depends only on its own observation, so the
+                # training folds take columns of one computation.
+                grid_w, K_all = normalized_kernel(X, h, ngrid)
                 fold_mse = []
                 for train, val in sample.folds:
-                    fitted = ATA_CSBF(X[train], y[train], ngrid).fit(
-                        h=h, weights=weights[train],
+                    fitted = ATA_CSBF(X[train], y[train]).fit(
+                        h=h, weights=weights[train], kernel=(grid_w, K_all[:, :, train]),
+                        diagnostics=False,
                     )
                     c, comps, lam = fitted.c, fitted.components, fitted.lam
                     c_m = c[0] + c[1:] @ lam
@@ -65,14 +72,13 @@ class ATA_CSBF:
             best = int(np.nanargmin(scores))
             h = grid[best]
             self.cv_score = scores[best]
+            self.tuning = {"h": h}
 
-        self.h = h
-        self.weights = weights
-        self.tuning = {"h": h}
-        w = self.weights
+        w = weights
         n, d = X.shape
-        _, grid_w, K = boundary_kernel(X, h, ngrid)
+        grid_w, K = kernel if kernel is not None else normalized_kernel(X, h, ngrid)
         density = np.maximum(K @ w / n, 1e-10)
+        # Fit y and the constraint functions together with the same smoother.
         Y = np.column_stack([y, X1 / w[:, None]])
         c = w @ Y / (n * np.mean(w))
         comps = backfit(K, grid_w, density, w[:, None] * (Y - c), K * w)
@@ -82,15 +88,17 @@ class ATA_CSBF:
             fitted += K[j].T @ (grid_w[:, None] * comps[j])
         base, basis = fitted[:, 0], fitted[:, 1:]
         B = X1.T @ basis / n
+        # Solve the sample moment constraints.
         lam = solve(B, X1.T @ (y - base) / n)
-        calibration = X1.T @ (y - (base + basis @ lam)) / n
-        self.diagnostics = {
-            "weight_min": float(np.min(w)),
-            "weight_median": float(np.median(w)),
-            "weight_max": float(np.max(w)),
-            "moment_condition": float(np.linalg.cond(B)),
-            "calibration_max_abs": float(np.max(np.abs(calibration))),
-        }
+        if diagnostics:
+            calibration = X1.T @ (y - (base + basis @ lam)) / n
+            self.diagnostics = {
+                "weight_min": float(np.min(w)),
+                "weight_median": float(np.median(w)),
+                "weight_max": float(np.max(w)),
+                "moment_condition": float(np.linalg.cond(B)),
+                "calibration_max_abs": float(np.max(np.abs(calibration))),
+            }
         self.c, self.components, self.lam = c, comps, lam
         return self
 
